@@ -1,0 +1,54 @@
+﻿# Environment variables and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Private uploaded files and local storage
+backend/uploads/
+backend/upload/
+backend/storage/
+backend/uploads/*
+backend/upload/*
+backend/storage/*
+
+# Temporary files
+.tmp/
+temp/
+.tmp-*
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Backend environment file
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Uploaded user documents
+backend/uploads/
+
+# Local database and private key files
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.db
+
+# Python caches (if any)
+__pycache__/
