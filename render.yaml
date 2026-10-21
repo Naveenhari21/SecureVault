@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: securevault-backend
+    env: node
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: MONGO_URI
+        sync: false          # set in Render dashboard — never committed
+      - key: JWT_SECRET
+        sync: false          # set in Render dashboard — never committed
+      - key: JWT_EXPIRE
+        value: 7d
+      - key: ENCRYPTION_KEY
+        sync: false          # set in Render dashboard — never committed
+      - key: ENCRYPTION_IV
+        sync: false          # set in Render dashboard — never committed
+      - key: MAX_FILE_SIZE
+        value: "52428800"
+      - key: FRONTEND_URL
+        sync: false          # set in Render dashboard after frontend deploys
