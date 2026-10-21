@@ -10,8 +10,7 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 10000
+      # PORT is injected automatically by Render — do NOT set it here
       - key: MONGO_URI
         sync: false          # set in Render dashboard — never committed
       - key: JWT_SECRET
