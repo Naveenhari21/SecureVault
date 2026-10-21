@@ -6,21 +6,15 @@ const connectDB = require('./config/db');
 
 const app = express();
 
-// ─── Database ─────────────────────────────────────────────────────────────────
-connectDB();
-
 // ─── CORS ─────────────────────────────────────────────────────────────────────
-// FRONTEND_URL env var is set in the hosting dashboard (e.g. https://your-app.vercel.app)
-// Falls back to localhost for local development
 const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
   process.env.FRONTEND_URL,
-].filter(Boolean); // remove undefined if FRONTEND_URL not set
+].filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (curl, Postman, server-to-server)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
     callback(new Error(`CORS: origin ${origin} not allowed`));
@@ -48,6 +42,11 @@ const authLimiter = rateLimit({
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 
+// ─── Health Check (no DB needed) ──────────────────────────────────────────────
+app.get('/api/health', (req, res) => {
+  res.json({ success: true, message: 'Server is running', timestamp: new Date() });
+});
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.use('/api/auth',        require('./routes/auth'));
 app.use('/api/files',       require('./routes/files'));
@@ -55,11 +54,6 @@ app.use('/api/permissions', require('./routes/permissions'));
 app.use('/api/versions',    require('./routes/versions'));
 app.use('/api/logs',        require('./routes/logs'));
 app.use('/api/admin',       require('./routes/admin'));
-
-// ─── Health Check ─────────────────────────────────────────────────────────────
-app.get('/api/health', (req, res) => {
-  res.json({ success: true, message: 'Server is running', timestamp: new Date() });
-});
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────────
 app.use((req, res) => {
@@ -73,9 +67,13 @@ app.use((err, req, res, next) => {
   res.status(status).json({ success: false, message: err.message || 'Internal Server Error' });
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
+// ─── Start server FIRST, then connect DB ──────────────────────────────────────
+// Render requires the port to be bound immediately.
+// DB connection runs async — server is already accepting traffic.
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📁 Environment: ${process.env.NODE_ENV}`);
+  // Connect DB after server is already listening
+  connectDB();
 });
