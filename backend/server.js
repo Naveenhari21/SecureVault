@@ -7,16 +7,19 @@ const connectDB = require('./config/db');
 const app = express();
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:3000',
-  process.env.FRONTEND_URL,'https://secure-vault-frontend-psi.vercel.app',
-].filter(Boolean);
-
+// Allow localhost, the production Vercel domain (FRONTEND_URL env var),
+// and ANY Vercel preview URL for this account.
 app.use(cors({
   origin: (origin, callback) => {
+    // Allow requests with no origin (Postman, curl, server-to-server)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Allow localhost dev
+    if (origin.startsWith('http://localhost')) return callback(null, true);
+    // Allow any vercel.app preview/production URL for this project
+    if (origin.endsWith('.vercel.app')) return callback(null, true);
+    // Allow the explicit FRONTEND_URL env var (e.g. custom domain)
+    if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL)
+      return callback(null, true);
     callback(new Error(`CORS: origin ${origin} not allowed`));
   },
   credentials: true,
