@@ -11,9 +11,15 @@ const FileVersionSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    // encryptedPath kept for backward-compat but not used in cloud mode
     encryptedPath: {
       type: String,
-      required: true,
+      default: '',
+    },
+    // encrypted file bytes stored directly in MongoDB
+    encryptedData: {
+      type: Buffer,
+      default: null,
     },
     iv: {
       type: String,

@@ -1,7 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const path = require('path');
-const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const File = require('../models/File');
 const FileVersion = require('../models/FileVersion');
@@ -11,15 +9,44 @@ const upload = require('../middleware/upload');
 const { encryptFile, decryptFile } = require('../utils/encryption');
 const { createAuditLog } = require('../utils/audit');
 
-const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const hasPermission = async (fileId, userId, required) => {
   const perm = await Permission.findOne({ file: fileId, user: userId });
   if (!perm) return false;
   const levels = { none: 0, view: 1, edit: 2, owner: 3 };
   return levels[perm.permission] >= levels[required];
+};
+
+/**
+ * Return the encrypted buffer for a File document.
+ * New uploads use encryptedData (stored in MongoDB).
+ * Legacy local uploads fall back to reading from disk (will fail in cloud).
+ */
+const getEncryptedBuffer = (file) => {
+  if (file.encryptedData && file.encryptedData.length > 0) {
+    return file.encryptedData;
+  }
+  // Fallback for old local records — will only work when the file still exists
+  if (file.encryptedPath) {
+    const fs = require('fs');
+    if (fs.existsSync(file.encryptedPath)) {
+      return fs.readFileSync(file.encryptedPath);
+    }
+  }
+  throw new Error('Encrypted file data not found');
+};
+
+const getVersionEncryptedBuffer = (version) => {
+  if (version.encryptedData && version.encryptedData.length > 0) {
+    return version.encryptedData;
+  }
+  if (version.encryptedPath) {
+    const fs = require('fs');
+    if (fs.existsSync(version.encryptedPath)) {
+      return fs.readFileSync(version.encryptedPath);
+    }
+  }
+  throw new Error('Encrypted version data not found');
 };
 
 // ─── POST /api/files/upload ───────────────────────────────────────────────────
@@ -30,17 +57,16 @@ router.post('/upload', protect, upload.single('file'), async (req, res) => {
     const { originalname, buffer, mimetype, size } = req.file;
     const { description, tags } = req.body;
 
-    // Encrypt
+    // Encrypt in memory
     const { encryptedBuffer, iv } = encryptFile(buffer);
     const storedName = `${uuidv4()}.enc`;
-    const encryptedPath = path.join(UPLOAD_DIR, storedName);
-    fs.writeFileSync(encryptedPath, encryptedBuffer);
 
-    // Save file record
+    // Save file record — store encrypted bytes in MongoDB
     const file = await File.create({
       originalName: originalname,
       storedName,
-      encryptedPath,
+      encryptedPath: '',            // not used in cloud mode
+      encryptedData: encryptedBuffer,
       iv,
       mimeType: mimetype,
       size,
@@ -51,13 +77,19 @@ router.post('/upload', protect, upload.single('file'), async (req, res) => {
     });
 
     // Owner permission
-    await Permission.create({ file: file._id, user: req.user._id, permission: 'owner', grantedBy: req.user._id });
+    await Permission.create({
+      file: file._id,
+      user: req.user._id,
+      permission: 'owner',
+      grantedBy: req.user._id,
+    });
 
-    // First version record
+    // First version record — store encrypted bytes in MongoDB
     await FileVersion.create({
       file: file._id,
       versionNumber: 1,
-      encryptedPath,
+      encryptedPath: '',
+      encryptedData: encryptedBuffer,
       iv,
       storedName,
       originalName: originalname,
@@ -75,7 +107,10 @@ router.post('/upload', protect, upload.single('file'), async (req, res) => {
       req,
     });
 
-    res.status(201).json({ success: true, file });
+    // Return file without the binary blob
+    const safeFile = file.toObject();
+    delete safeFile.encryptedData;
+    res.status(201).json({ success: true, file: safeFile });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: err.message || 'Upload failed' });
@@ -91,6 +126,7 @@ router.get('/', protect, async (req, res) => {
     if (tag)    query.tags = tag.toLowerCase();
 
     const files = await File.find(query)
+      .select('-encryptedData')        // never send binary blob to listing
       .populate('owner', 'username email')
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
@@ -111,10 +147,13 @@ router.get('/shared', protect, async (req, res) => {
       permission: { $in: ['view', 'edit'] },
     }).populate({
       path: 'file',
+      select: '-encryptedData',
       populate: { path: 'owner', select: 'username email' },
     });
 
-    const files = perms.map((p) => ({ ...p.file?.toObject(), myPermission: p.permission })).filter((f) => f._id);
+    const files = perms
+      .map((p) => ({ ...p.file?.toObject(), myPermission: p.permission }))
+      .filter((f) => f._id);
     res.json({ success: true, files });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Error fetching shared files' });
@@ -124,7 +163,9 @@ router.get('/shared', protect, async (req, res) => {
 // ─── GET /api/files/:id ───────────────────────────────────────────────────────
 router.get('/:id', protect, async (req, res) => {
   try {
-    const file = await File.findById(req.params.id).populate('owner', 'username email firstName lastName');
+    const file = await File.findById(req.params.id)
+      .select('-encryptedData')
+      .populate('owner', 'username email firstName lastName');
     if (!file) return res.status(404).json({ success: false, message: 'File not found' });
 
     const allowed = await hasPermission(file._id, req.user._id, 'view');
@@ -140,13 +181,13 @@ router.get('/:id', protect, async (req, res) => {
 // ─── GET /api/files/:id/download ─────────────────────────────────────────────
 router.get('/:id/download', protect, async (req, res) => {
   try {
-    const file = await File.findById(req.params.id);
+    const file = await File.findById(req.params.id);   // includes encryptedData
     if (!file) return res.status(404).json({ success: false, message: 'File not found' });
 
     const allowed = await hasPermission(file._id, req.user._id, 'view');
     if (!allowed) return res.status(403).json({ success: false, message: 'Access denied' });
 
-    const encryptedBuffer = fs.readFileSync(file.encryptedPath);
+    const encryptedBuffer = getEncryptedBuffer(file);
     const decryptedBuffer = decryptFile(encryptedBuffer, file.iv);
 
     await createAuditLog({
@@ -185,21 +226,21 @@ router.put('/:id', protect, upload.single('file'), async (req, res) => {
       const { buffer, originalname, mimetype, size } = req.file;
       const { encryptedBuffer, iv } = encryptFile(buffer);
       const storedName = `${uuidv4()}.enc`;
-      const encryptedPath = path.join(UPLOAD_DIR, storedName);
-      fs.writeFileSync(encryptedPath, encryptedBuffer);
 
-      file.currentVersion += 1;
-      file.encryptedPath  = encryptedPath;
-      file.iv             = iv;
-      file.storedName     = storedName;
-      file.originalName   = originalname;
-      file.mimeType       = mimetype;
-      file.size           = size;
+      file.currentVersion  += 1;
+      file.encryptedPath    = '';
+      file.encryptedData    = encryptedBuffer;
+      file.iv               = iv;
+      file.storedName       = storedName;
+      file.originalName     = originalname;
+      file.mimeType         = mimetype;
+      file.size             = size;
 
       await FileVersion.create({
         file: file._id,
         versionNumber: file.currentVersion,
-        encryptedPath,
+        encryptedPath: '',
+        encryptedData: encryptedBuffer,
         iv,
         storedName,
         originalName: originalname,
@@ -228,7 +269,9 @@ router.put('/:id', protect, upload.single('file'), async (req, res) => {
       req,
     });
 
-    res.json({ success: true, file });
+    const safeFile = file.toObject();
+    delete safeFile.encryptedData;
+    res.json({ success: true, file: safeFile });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Update failed' });
@@ -268,7 +311,11 @@ router.get('/dashboard/stats', protect, async (req, res) => {
     const [myFiles, sharedPerms, recentLogs] = await Promise.all([
       File.countDocuments({ owner: req.user._id }),
       Permission.countDocuments({ user: req.user._id, permission: { $in: ['view', 'edit'] } }),
-      File.find({ owner: req.user._id }).sort({ createdAt: -1 }).limit(5).populate('owner', 'username'),
+      File.find({ owner: req.user._id })
+        .select('-encryptedData')
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .populate('owner', 'username'),
     ]);
 
     res.json({ success: true, stats: { myFiles, sharedWithMe: sharedPerms, recentDocuments: recentLogs } });

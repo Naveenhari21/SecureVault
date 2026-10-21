@@ -1,6 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const fs = require('fs');
 const FileVersion = require('../models/FileVersion');
 const Permission = require('../models/Permission');
 const { protect } = require('../middleware/auth');
@@ -15,6 +14,20 @@ const hasPermission = async (fileId, userId, required) => {
   return levels[perm.permission] >= levels[required];
 };
 
+const getVersionEncryptedBuffer = (version) => {
+  if (version.encryptedData && version.encryptedData.length > 0) {
+    return version.encryptedData;
+  }
+  // Fallback for legacy local records
+  if (version.encryptedPath) {
+    const fs = require('fs');
+    if (fs.existsSync(version.encryptedPath)) {
+      return fs.readFileSync(version.encryptedPath);
+    }
+  }
+  throw new Error('Encrypted version data not found');
+};
+
 // ─── GET /api/versions/:fileId ────────────────────────────────────────────────
 router.get('/:fileId', protect, async (req, res) => {
   try {
@@ -22,6 +35,7 @@ router.get('/:fileId', protect, async (req, res) => {
     if (!allowed) return res.status(403).json({ success: false, message: 'Access denied' });
 
     const versions = await FileVersion.find({ file: req.params.fileId })
+      .select('-encryptedData')          // never send binary blob in listing
       .populate('uploadedBy', 'username email')
       .sort({ versionNumber: -1 });
 
@@ -44,7 +58,7 @@ router.get('/:fileId/:versionId/download', protect, async (req, res) => {
 
     if (!version) return res.status(404).json({ success: false, message: 'Version not found' });
 
-    const encryptedBuffer = fs.readFileSync(version.encryptedPath);
+    const encryptedBuffer = getVersionEncryptedBuffer(version);
     const decryptedBuffer = decryptFile(encryptedBuffer, version.iv);
 
     await createAuditLog({

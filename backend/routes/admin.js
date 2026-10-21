@@ -7,7 +7,6 @@ const Permission = require('../models/Permission');
 const FileVersion = require('../models/FileVersion');
 const { protect, adminOnly } = require('../middleware/auth');
 const { createAuditLog } = require('../utils/audit');
-const fs = require('fs');
 
 // All admin routes require authentication + admin role
 router.use(protect, adminOnly);
@@ -204,6 +203,7 @@ router.get('/files', async (req, res) => {
     // Use setOptions to bypass the soft-delete middleware
     const files = await File.find(rawQuery)
       .setOptions({ includeDeleted: true })
+      .select('-encryptedData')
       .populate('owner', 'username email')
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
@@ -224,19 +224,7 @@ router.delete('/files/:id', async (req, res) => {
     const file = await File.findById(req.params.id).setOptions({ includeDeleted: true });
     if (!file) return res.status(404).json({ success: false, message: 'File not found' });
 
-    // Delete physical encrypted file
-    if (fs.existsSync(file.encryptedPath)) {
-      fs.unlinkSync(file.encryptedPath);
-    }
-
-    // Delete all version files too
-    const versions = await FileVersion.find({ file: file._id });
-    for (const v of versions) {
-      if (fs.existsSync(v.encryptedPath)) {
-        fs.unlinkSync(v.encryptedPath);
-      }
-    }
-
+    // Files are now stored in MongoDB — delete all version and file records
     await FileVersion.deleteMany({ file: file._id });
     await Permission.deleteMany({ file: file._id });
     await File.findByIdAndDelete(file._id);
